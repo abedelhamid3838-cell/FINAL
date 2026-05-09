@@ -1,48 +1,57 @@
 name: Windows 11 RDP
-
 on:
   workflow_dispatch:
     inputs:
       password:
-        description: 'Session Password (min 6 chars)'
+        description: 'RDP Password'
         required: true
-        default: 'cloud123'
-
+        default: 'Admin@1234'
 jobs:
-  rdp:
+  build:
     runs-on: windows-2022
     timeout-minutes: 360
-
     steps:
-      - name: Download RustDesk Server
-        shell: powershell
+      - name: Enable RDP
         run: |
-          $url = "https://github.com/rustdesk/rustdesk/releases/download/1.2.6/rustdesk-1.2.6-x86_64.exe"
-          Invoke-WebRequest -Uri $url -OutFile rustdesk.exe
-          Write-Host "RustDesk downloaded."
-
-      - name: Install and Configure RustDesk
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
         shell: powershell
+      - name: Set Admin Password
         run: |
-          Start-Process -FilePath rustdesk.exe -ArgumentList "--silent-install" -Wait
-          Start-Sleep -Seconds 5
-          $rdPath = "C:\Program Files\RustDesk\RustDesk.exe"
-          if (-not (Test-Path $rdPath)) {
-            $rdPath = "$env:LOCALAPPDATA\Programs\RustDesk\RustDesk.exe"
-          }
-          Start-Process -FilePath $rdPath
-          Start-Sleep -Seconds 10
+          $user = $env:USERNAME
           $pass = "${{ github.event.inputs.password }}"
-          & $rdPath --password $pass
-          Start-Sleep -Seconds 5
-          $id = & $rdPath --get-id 2>&1
-          Write-Host "==========================================="
-          Write-Host " RustDesk Connection Info"
-          Write-Host "==========================================="
-          Write-Host " ID       : $id"
-          Write-Host " Password : $pass"
-          Write-Host "==========================================="
-
-      - name: Keep alive
+          net user $user $pass
+          net localgroup "Remote Desktop Users" $user /add
+          Write-Host "User ready: $user"
         shell: powershell
-        run: Start-Sleep -Seconds 21300
+      - name: Download bore
+        run: |
+          Invoke-WebRequest "https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-pc-windows-msvc.zip" -OutFile bore.zip
+          Expand-Archive bore.zip -DestinationPath C:\bore
+        shell: powershell
+      - name: Start bore and show connection info
+        run: |
+          $job = Start-Job -ScriptBlock {
+            & "C:\bore\bore.exe" local 3389 --to bore.pub 2>&1
+          }
+          Start-Sleep -Seconds 10
+          $output = Receive-Job -Job $job
+          Write-Host "--- bore output ---"
+          Write-Host $output
+          $port = ($output | Select-String -Pattern 'bore\.pub:(\d+)').Matches.Groups[1].Value
+          Write-Host "==========================================="
+          Write-Host " RDP Connection Info"
+          Write-Host "==========================================="
+          if ($port) {
+            Write-Host " Address  : bore.pub:$port"
+          } else {
+            Write-Host " Look above for: listening at bore.pub:XXXXX"
+          }
+          Write-Host " Username : $env:USERNAME"
+          Write-Host " Password : ${{ github.event.inputs.password }}"
+          Write-Host "==========================================="
+        shell: powershell
+      - name: Keep alive
+        run: Start-Sleep -Seconds 21600
+        shell: powershell
